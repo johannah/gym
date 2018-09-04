@@ -2,7 +2,7 @@ import numpy as np
 import math
 import Box2D
 from Box2D.b2 import (edgeShape, circleShape, fixtureDef, polygonShape, revoluteJointDef, contactListener, shape)
-
+import time
 # Top-down car dynamics simulation.
 #
 # Some ideas are taken from this great tutorial http://www.iforce2d.net/b2dtut/top-down-car by Chris Campbell.
@@ -13,7 +13,8 @@ from Box2D.b2 import (edgeShape, circleShape, fixtureDef, polygonShape, revolute
 SIZE = 0.02
 ENGINE_POWER            = 100000000*SIZE*SIZE
 WHEEL_MOMENT_OF_INERTIA = 4000*SIZE*SIZE
-FRICTION_LIMIT          = 1000000*SIZE*SIZE     # friction ~= mass ~= size^2 (calculated implicitly using density)
+#FRICTION_LIMIT          = 1000000*SIZE*SIZE     # friction ~= mass ~= size^2 (calculated implicitly using density)
+FRICTION_LIMIT          = 3500000*SIZE*SIZE     # friction ~= mass ~= size^2 (calculated implicitly using density)
 WHEEL_R  = 27
 WHEEL_W  = 14
 WHEELPOS = [
@@ -108,21 +109,43 @@ class Car:
 
     def gas(self, gas):
         'control: rear wheel drive'
-        gas = np.clip(gas, 0, 1)
-        for w in self.wheels[2:4]:
-            diff = gas - w.gas
-            if diff > 0.1: diff = 0.1  # gradually increase, but stop immediately
-            w.gas += diff
+        if gas >= 0:
+            maxd = 0.1
+            gas = np.clip(gas, 0, 1)
+            for w in self.wheels[2:4]:
+                diff = gas - w.gas
+                ndiff = gas - w.gas
+                pgas = np.copy(w.gas)
+                if abs(diff) < maxd: 
+                    w.gas = gas
+                else:
+                    diff = np.sign(diff)*maxd  # gradually increase, but stop immediately
+                    w.gas += diff
+                #print(diff, ndiff,'set',gas, 'before',pgas, 'after',w.gas)
+            #gas = np.clip(gas, 0, 1)
+            #for w in self.wheels[2:4]:
+            #    w.gas = gas
+            #print("setting gas", w.gas)
+        else:
+            'control: brake b=0..1, more than 0.9 blocks wheels to zero rotation'
+            for w in self.wheels:
+                # make it positive
+                w.brake = np.abs(gas)
 
-    def brake(self, b):
-        'control: brake b=0..1, more than 0.9 blocks wheels to zero rotation'
-        for w in self.wheels:
-            w.brake = b
+
+   # JRH - dont use brake , just negative gas
+   # def brake(self, b):
+   #     'control: brake b=0..1, more than 0.9 blocks wheels to zero rotation'
+   #     for w in self.wheels:
+   #         w.brake = b
 
     def steer(self, s):
         'control: steer s=-1..1, it takes time to rotate steering wheel from side to side, s is target position'
         self.wheels[0].steer = s
         self.wheels[1].steer = s
+        #snew = np.clip(self.wheels[0].steer + s, -1, 1)
+        #self.wheels[0].steer = snew
+        #self.wheels[1].steer = snew
 
     def step(self, dt):
         for w in self.wheels:
@@ -133,22 +156,38 @@ class Car:
 
             # Position => friction_limit
             grass = True
-            friction_limit = FRICTION_LIMIT*0.6  # Grass friction if no tile
-            for tile in w.tiles:
-                friction_limit = max(friction_limit, FRICTION_LIMIT*tile.road_friction)
-                grass = False
+            #friction_limit = FRICTION_LIMIT*0.6  # Grass friction if no tile
+            # JRH - grass doesnt matter
+            #grass = False
+            grass = False 
+            friction_limit = FRICTION_LIMIT
+            
+            #for tile in w.tiles:
+            #    friction_limit = max(friction_limit, FRICTION_LIMIT*tile.road_friction)
+            #    grass = False
+            #    print("Grass False", FRICTION_LIMIT*tile.road_friction, friction_limit)
+            #print(friction_limit)
 
             # Force
             forw = w.GetWorldVector( (0,1) )
             side = w.GetWorldVector( (1,0) )
             v = w.linearVelocity
+            #print("linear velocity", v)
             vf = forw[0]*v[0] + forw[1]*v[1]  # forward speed
             vs = side[0]*v[0] + side[1]*v[1]  # side speed
 
             # WHEEL_MOMENT_OF_INERTIA*np.square(w.omega)/2 = E -- energy
             # WHEEL_MOMENT_OF_INERTIA*w.omega * domega/dt = dE/dt = W -- power
             # domega = dt*W/WHEEL_MOMENT_OF_INERTIA/w.omega
+            #w.omega += dt*ENGINE_POWER*w.gas/WHEEL_MOMENT_OF_INERTIA/(abs(w.omega)+5.0)  # small coef not to divide by zero
+            orig_omega = w.omega
+            base  = w.omega + dt*ENGINE_POWER*w.gas/WHEEL_MOMENT_OF_INERTIA/(abs(w.omega)+5.0)  # small coef not to divide by zero
             w.omega += dt*ENGINE_POWER*w.gas/WHEEL_MOMENT_OF_INERTIA/(abs(w.omega)+5.0)  # small coef not to divide by zero
+            # add friction 
+            friction_value = .8
+            val = -np.sign(w.omega)*friction_value
+            if abs(val) > abs(w.omega): val = w.omega  # low speed => same as = 0
+            w.omega +=val
             self.fuel_spent += dt*ENGINE_POWER*w.gas
 
             if w.brake >= 0.9:
@@ -159,7 +198,7 @@ class Car:
                 val = BRAKE_FORCE*w.brake
                 if abs(val) > abs(w.omega): val = abs(w.omega)  # low speed => same as = 0
                 w.omega += dir*val
-            w.phase += w.omega*dt
+                w.phase += w.omega*dt
 
             vr = w.omega*w.wheel_rad  # rotating wheel speed
             f_force = -vf + vr        # force direction is direction of speed difference
@@ -172,17 +211,17 @@ class Car:
             force = np.sqrt(np.square(f_force) + np.square(p_force))
 
             # Skid trace
-            if abs(force) > 2.0*friction_limit:
-                if w.skid_particle and w.skid_particle.grass==grass and len(w.skid_particle.poly) < 30:
-                    w.skid_particle.poly.append( (w.position[0], w.position[1]) )
-                elif w.skid_start is None:
-                    w.skid_start = w.position
-                else:
-                    w.skid_particle = self._create_particle( w.skid_start, w.position, grass )
-                    w.skid_start = None
-            else:
-                w.skid_start = None
-                w.skid_particle = None
+            #if abs(force) > 2.0*friction_limit:
+            #    if w.skid_particle and w.skid_particle.grass==grass and len(w.skid_particle.poly) < 30:
+            #        w.skid_particle.poly.append( (w.position[0], w.position[1]) )
+            #    elif w.skid_start is None:
+            #        w.skid_start = w.position
+            #    else:
+            #        w.skid_particle = self._create_particle( w.skid_start, w.position, grass )
+            #        w.skid_start = None
+            #else:
+            w.skid_start = None
+            w.skid_particle = None
 
             if abs(force) > friction_limit:
                 f_force /= force

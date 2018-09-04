@@ -43,8 +43,10 @@ STATE_W = 96   # less than Atari 160x192
 STATE_H = 96
 VIDEO_W = 600
 VIDEO_H = 400
-WINDOW_W = 1200
-WINDOW_H = 1000
+#WINDOW_W = 1200
+#WINDOW_H = 1000
+WINDOW_W = 800
+WINDOW_H = 600
 
 SCALE       = 6.0        # Track scale
 TRACK_RAD   = 900/SCALE  # Track is heavily morphed circle with this radius
@@ -289,19 +291,30 @@ class CarRacing(gym.Env):
             print("retry to generate track (normal if there are not many of this messages)")
         self.car = Car(self.world, *self.track[0][1:4])
 
-        return self.step(None)[0]
+        return self.step(None)[0], self.track
 
     def step(self, action):
         if action is not None:
             self.car.steer(-action[0])
             self.car.gas(action[1])
-            self.car.brake(action[2])
+            #self.car.brake(action[2])
+            #from IPython import embed; embed()
+            #print("STEP IN", action[1], self.car.wheels[3].gas)
+        else:
+            self.car.steer(0)
+            self.car.gas(0)
+            #self.car.brake(0)
+
 
         self.car.step(1.0/FPS)
         self.world.Step(1.0/FPS, 6*30, 2*30)
         self.t += 1.0/FPS
 
-        self.state = self.render("state_pixels")
+        w0py = self.car.wheels[0].transform.position[0]
+        w0px= self.car.wheels[0].transform.position[1]
+        true_speed = np.sqrt(np.square(self.car.hull.linearVelocity[0]) + np.square(self.car.hull.linearVelocity[1]))
+        img = self.render("state_pixels")
+        self.state = [img, true_speed, w0py, w0px, self.car.hull.angle, self.car.wheels[0].steer, self.car.wheels[3].gas, self.car.wheels[3].brake]
 
         step_reward = 0
         done = False
@@ -365,7 +378,7 @@ class CarRacing(gym.Env):
                 VP_H = STATE_H
             gl.glViewport(0, 0, VP_W, VP_H)
             t.enable()
-            self.render_road()
+            road_states = self.render_road()
             for geom in self.viewer.onetime_geoms:
                 geom.render()
             t.disable()
@@ -408,17 +421,24 @@ class CarRacing(gym.Env):
         gl.glVertex3f(-PLAYFIELD, -PLAYFIELD, 0)
         gl.glColor4f(0.4, 0.9, 0.4, 1.0)
         k = PLAYFIELD/20.0
+        road_states = []
         for x in range(-20, 20, 2):
             for y in range(-20, 20, 2):
                 gl.glVertex3f(k*x + k, k*y + 0, 0)
                 gl.glVertex3f(k*x + 0, k*y + 0, 0)
                 gl.glVertex3f(k*x + 0, k*y + k, 0)
                 gl.glVertex3f(k*x + k, k*y + k, 0)
+                road_states.append([(k*x + k, k*y + 0, 0),
+                                     (k*x + 0, k*y + 0, 0),
+                                     (k*x + 0, k*y + k, 0),
+                                     (k*x + k, k*y + k, 0)])
+
         for poly, color in self.road_poly:
             gl.glColor4f(color[0], color[1], color[2], 1)
             for p in poly:
                 gl.glVertex3f(p[0], p[1], 0)
         gl.glEnd()
+        return road_states
 
     def render_indicators(self, W, H):
         gl.glBegin(gl.GL_QUADS)
